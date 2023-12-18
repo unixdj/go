@@ -103,14 +103,25 @@ func (d *dataIO) rest() []byte {
 	return r
 }
 
-// Make a string by stopping at the first NUL
-func byteString(p []byte) string {
-	for i := 0; i < len(p); i++ {
-		if p[i] == 0 {
-			return string(p[0:i])
+// Strip trailing NULs from p and convert to string, to allocate
+// one string for all abbrevs.
+func abbrevChars(p []byte) string {
+	for i := len(p); i > 0; i-- {
+		if p[i-1] != 0 {
+			return string(p[:i])
 		}
 	}
-	return string(p)
+	return ""
+}
+
+// Cut a string by stopping at the first NUL
+func abbrevString(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0 {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 var errBadData = errors.New("malformed time zone information")
@@ -221,7 +232,7 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 	zonedata := dataIO{d.read(n[NZone] * 6), false}
 
 	// Time zone abbreviations.
-	abbrev := d.read(n[NChar])
+	abbrev := abbrevChars(d.read(n[NChar]))
 
 	// Leap-second time pairs
 	d.read(n[NLeap] * (size + 4))
@@ -272,7 +283,7 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 		if b, ok = zonedata.byte(); !ok || int(b) >= len(abbrev) {
 			return nil, errBadData
 		}
-		zones[i].name = byteString(abbrev[b:])
+		zones[i].name = abbrevString(abbrev[b:])
 		if runtime.GOOS == "aix" && len(name) > 8 && (name[:8] == "Etc/GMT+" || name[:8] == "Etc/GMT-") {
 			// There is a bug with AIX 7.2 TL 0 with files in Etc,
 			// GMT+1 will return GMT-1 instead of GMT+1 or -01.
