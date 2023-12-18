@@ -38,6 +38,12 @@ func (f fileSizeError) Error() string {
 	return "time: file " + string(f) + " is too large"
 }
 
+type unknownTimezoneError string
+
+func (u unknownTimezoneError) Error() string {
+	return "unknown time zone " + string(u)
+}
+
 // Copies of io.Seek* constants to avoid importing "io":
 const (
 	seekStart   = 0
@@ -557,7 +563,7 @@ func loadLocation(name string, sources []string) (z *Location, firstErr error) {
 	if firstErr != nil {
 		return nil, firstErr
 	}
-	return nil, errors.New("unknown time zone " + name)
+	return nil, unknownTimezoneError(name)
 }
 
 // readFile reads and returns the content of the named file.
