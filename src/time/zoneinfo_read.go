@@ -295,8 +295,10 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 	}
 
 	// Now the transition time info.
-	tx := make([]zoneTrans, n[NTime])
-	for i := range tx {
+	tx := make([]zoneTrans, n[NTime]+1)
+	// Build fake transition to cover the time before first transition.
+	tx[0] = zoneTrans{when: alpha, index: 0}
+	for i := 1; i < len(tx); i++ {
 		var n int64
 		if !is64 {
 			if n4, ok := txtimes.big4(); !ok {
@@ -312,22 +314,16 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 			}
 		}
 		tx[i].when = n
-		if int(txzones[i]) >= len(zones) {
+		if int(txzones[i-1]) >= len(zones) {
 			return nil, errBadData
 		}
-		tx[i].index = txzones[i]
-		if i < len(isstd) {
-			tx[i].isstd = isstd[i] != 0
+		tx[i].index = txzones[i-1]
+		if i-1 < len(isstd) {
+			tx[i].isstd = isstd[i-1] != 0
 		}
-		if i < len(isutc) {
-			tx[i].isutc = isutc[i] != 0
+		if i-1 < len(isutc) {
+			tx[i].isutc = isutc[i-1] != 0
 		}
-	}
-
-	if len(tx) == 0 {
-		// Build fake transition to cover all time.
-		// This happens in fixed locations like "Etc/GMT0".
-		tx = append(tx, zoneTrans{when: alpha, index: 0})
 	}
 
 	rule, newYearZone, midYearZone, _ := tzset(extend)
@@ -338,6 +334,9 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 
 	// Committed to succeed.
 	l := &Location{zone: zones, tx: tx, name: name, rule: rule}
+	if len(l.tx) > 1 {
+		l.tx[0].index = uint8(l.lookupFirstZone())
+	}
 
 	// Fill in the cache with information about right now,
 	// since that will be the most common lookup.

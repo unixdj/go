@@ -167,20 +167,6 @@ func (l *Location) lookup(sec int64) (name string, offset int, start, end int64,
 		return
 	}
 
-	if len(l.tx) == 0 || sec < l.tx[0].when {
-		zone := &l.zone[l.lookupFirstZone()]
-		name = zone.name
-		offset = zone.offset
-		start = alpha
-		if len(l.tx) > 0 {
-			end = l.tx[0].when
-		} else {
-			end = omega
-		}
-		isDST = zone.isDST
-		return
-	}
-
 	// Binary search for entry with largest time <= sec.
 	// Not using sort.Search to avoid dependencies.
 	tx := l.tx
@@ -237,8 +223,8 @@ func (l *Location) lookupFirstZone() int {
 	}
 
 	// Case 2.
-	if len(l.tx) > 0 && l.zone[l.tx[0].index].isDST {
-		for zi := int(l.tx[0].index) - 1; zi >= 0; zi-- {
+	if len(l.tx) > 1 && l.zone[l.tx[1].index].isDST {
+		for zi := int(l.tx[1].index) - 1; zi >= 0; zi-- {
 			if !l.zone[zi].isDST {
 				return zi
 			}
@@ -259,7 +245,7 @@ func (l *Location) lookupFirstZone() int {
 // firstZoneUsed reports whether the first zone is used by some
 // transition.
 func (l *Location) firstZoneUsed() bool {
-	for _, tx := range l.tx {
+	for _, tx := range l.tx[1:] {
 		if tx.index == 0 {
 			return true
 		}
