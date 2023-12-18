@@ -318,7 +318,7 @@ func TestTzsetOffset(t *testing.T) {
 		{"1000", 0, "", false},
 		{"8PDT", 8 * 60 * 60, "PDT", true},
 	} {
-		off, out, ok := time.TzsetOffset(test.in)
+		off, out, ok := time.TzsetOffset(test.in, 24*7-1)
 		if off != test.off || out != test.out || ok != test.ok {
 			t.Errorf("tzsetName(%q) = %d, %q, %t, want %d, %q, %t", test.in, off, out, ok, test.off, test.out, test.ok)
 		}

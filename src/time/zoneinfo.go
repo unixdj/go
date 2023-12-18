@@ -277,7 +277,7 @@ func (l *Location) firstZoneUsed() bool {
 func tzset(s string) (rules []rule, newYearZone, midYearZone zone, ok bool) {
 	newYearZone.name, s, ok = tzsetName(s)
 	if ok {
-		newYearZone.offset, s, ok = tzsetOffset(s)
+		newYearZone.offset, s, ok = tzsetOffset(s, 24)
 	}
 	if !ok {
 		newYearZone = zone{}
@@ -299,7 +299,7 @@ func tzset(s string) (rules []rule, newYearZone, midYearZone zone, ok bool) {
 		if len(s) == 0 || s[0] == ',' {
 			midYearZone.offset = newYearZone.offset + secondsPerHour
 		} else {
-			midYearZone.offset, s, ok = tzsetOffset(s)
+			midYearZone.offset, s, ok = tzsetOffset(s, 24)
 			midYearZone.offset = -midYearZone.offset // as with newYearZone.offset, above
 		}
 	}
@@ -376,7 +376,7 @@ func tzsetName(s string) (string, string, bool) {
 // tzsetOffset returns the timezone offset at the start of the tzset string s,
 // and the remainder of s, and reports whether the parsing is OK.
 // The timezone offset is returned as a number of seconds.
-func tzsetOffset(s string) (offset int, rest string, ok bool) {
+func tzsetOffset(s string, maxHour int) (offset int, rest string, ok bool) {
 	if len(s) == 0 {
 		return 0, "", false
 	}
@@ -388,10 +388,8 @@ func tzsetOffset(s string) (offset int, rest string, ok bool) {
 		neg = true
 	}
 
-	// The tzdata code permits values up to 24 * 7 here,
-	// although POSIX does not.
 	var hours int
-	hours, s, ok = tzsetNum(s, 0, 24*7)
+	hours, s, ok = tzsetNum(s, 0, maxHour)
 	if !ok {
 		return 0, "", false
 	}
@@ -500,7 +498,9 @@ func tzsetRule(s string) (rule, string, bool) {
 		return r, s, true
 	}
 
-	offset, s, ok := tzsetOffset(s[1:])
+	// The tzdata code permits values up to 24 * 7 - 1 here,
+	// although POSIX does not.
+	offset, s, ok := tzsetOffset(s[1:], 24*7-1)
 	if !ok {
 		return rule{}, "", false
 	}
