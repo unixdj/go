@@ -37,7 +37,6 @@ var (
 	ReadFile               = readFile
 	LoadTzinfo             = loadTzinfo
 	NextStdChunk           = nextStdChunk
-	Tzset                  = tzset
 	TzsetName              = tzsetName
 	TzsetOffset            = tzsetOffset
 )
@@ -73,6 +72,31 @@ func TzsetRule(s string) (Rule, string, bool) {
 		Time: r.time,
 	}
 	return rr, rs, ok
+}
+
+func TzsetTzrule(tz string, lastTxSec, sec int64) (name string, offset int, start, end int64, isDST, ok bool) {
+	var (
+		r                        []rule
+		newYearZone, midYearZone zone
+	)
+	r, newYearZone, midYearZone, ok = tzset(tz)
+	if !ok {
+		return
+	}
+	if len(r) == 2 {
+		r[0].zone = &midYearZone
+		r[1].zone = &newYearZone
+	}
+	var z *zone
+	z, start, end = tzrule(r, lastTxSec, sec)
+	if z == nil {
+		z = &newYearZone
+	}
+	name = z.name
+	offset = z.offset
+	isDST = z.isDST
+	ok = true
+	return
 }
 
 // StdChunkNames maps from nextStdChunk results to the matched strings.

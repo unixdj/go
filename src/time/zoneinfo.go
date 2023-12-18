@@ -26,11 +26,11 @@ type Location struct {
 	tx   []zoneTrans
 
 	// The tzdata information can be followed by a string that describes
-	// how to handle DST transitions not recorded in zoneTrans.
+	// how to handle DST transitions after the last zoneTrans.
 	// The format is the TZ environment variable without a colon; see
 	// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap08.html.
 	// Example string, for America/Los_Angeles: PST8PDT,M3.2.0,M11.1.0
-	extend string
+	rule []rule
 
 	// Most lookups will be for the current time.
 	// To avoid the binary search through tx, keep a
@@ -206,9 +206,9 @@ func (l *Location) lookup(sec int64) (name string, offset int, start, end int64,
 
 	// If we're at the end of the known zone transitions,
 	// try the extend string.
-	if lo == len(tx)-1 && l.extend != "" {
-		if ename, eoffset, estart, eend, eisDST, ok := tzset(l.extend, start, sec); ok {
-			return ename, eoffset, estart, eend, eisDST
+	if lo == len(tx)-1 {
+		if ezone, estart, eend := tzrule(l.rule, start, sec); ezone != nil {
+			return ezone.name, ezone.offset, estart, eend, ezone.isDST
 		}
 	}
 
@@ -267,48 +267,46 @@ func (l *Location) firstZoneUsed() bool {
 	return false
 }
 
-// tzset takes a timezone string like the one found in the TZ environment
-// variable, the time of the last time zone transition expressed as seconds
-// since January 1, 1970 00:00:00 UTC, and a time expressed the same way.
-// We call this a tzset string since in C the function tzset reads TZ.
-// The return values are as for lookup, plus ok which reports whether the
-// parse succeeded.
-func tzset(s string, lastTxSec, sec int64) (name string, offset int, start, end int64, isDST, ok bool) {
-	var (
-		stdName, dstName     string
-		stdOffset, dstOffset int
-	)
-
-	stdName, s, ok = tzsetName(s)
+// tzset parses a timezone string like the one found in the TZ environment
+// variable.  We call this a tzset string since in C the function tzset
+// reads TZ.  The return values are transition rules, target zones,
+// plus ok which reports whether the parse succeeded.  If the string
+// specifies a static zone or a DST zone spanning the whole year, the zone
+// is returned in newYearZone and rules is nil.  Otherwise rules is of
+// length 2.  Zones are returned as values to avoid unneeded allocation.
+func tzset(s string) (rules []rule, newYearZone, midYearZone zone, ok bool) {
+	newYearZone.name, s, ok = tzsetName(s)
 	if ok {
-		stdOffset, s, ok = tzsetOffset(s)
+		newYearZone.offset, s, ok = tzsetOffset(s)
 	}
 	if !ok {
-		return "", 0, 0, 0, false, false
+		newYearZone = zone{}
+		return
 	}
 
 	// The numbers in the tzset string are added to local time to get UTC,
 	// but our offsets are added to UTC to get local time,
 	// so we negate the number we see here.
-	stdOffset = -stdOffset
+	newYearZone.offset = -newYearZone.offset
 
 	if len(s) == 0 || s[0] == ',' {
 		// No daylight savings time.
-		return stdName, stdOffset, lastTxSec, omega, false, true
+		return
 	}
 
-	dstName, s, ok = tzsetName(s)
+	midYearZone.name, s, ok = tzsetName(s)
 	if ok {
 		if len(s) == 0 || s[0] == ',' {
-			dstOffset = stdOffset + secondsPerHour
+			midYearZone.offset = newYearZone.offset + secondsPerHour
 		} else {
-			dstOffset, s, ok = tzsetOffset(s)
-			dstOffset = -dstOffset // as with stdOffset, above
+			midYearZone.offset, s, ok = tzsetOffset(s)
+			midYearZone.offset = -midYearZone.offset // as with newYearZone.offset, above
 		}
 	}
 	if !ok {
-		return "", 0, 0, 0, false, false
+		return nil, zone{}, zone{}, false
 	}
+	midYearZone.isDST = true
 
 	if len(s) == 0 {
 		// Default DST rules per tzcode.
@@ -316,54 +314,33 @@ func tzset(s string, lastTxSec, sec int64) (name string, offset int, start, end 
 	}
 	// The TZ definition does not mention ';' here but tzcode accepts it.
 	if s[0] != ',' && s[0] != ';' {
-		return "", 0, 0, 0, false, false
+		return nil, zone{}, zone{}, false
 	}
 	s = s[1:]
 
-	var startRule, endRule rule
-	startRule, s, ok = tzsetRule(s)
+	rules = make([]rule, 2)
+	rules[0], s, ok = tzsetRule(s)
 	if !ok || len(s) == 0 || s[0] != ',' {
-		return "", 0, 0, 0, false, false
+		return nil, zone{}, zone{}, false
 	}
 	s = s[1:]
-	endRule, s, ok = tzsetRule(s)
+	rules[1], s, ok = tzsetRule(s)
 	if !ok || len(s) > 0 {
-		return "", 0, 0, 0, false, false
+		return nil, zone{}, zone{}, false
 	}
 
-	year, _, _, yday := absDate(uint64(sec+unixToInternal+internalToAbsolute), false)
-
-	ysec := int64(yday*secondsPerDay) + sec%secondsPerDay
-
-	// Compute start of year in seconds since Unix epoch.
-	d := daysSinceEpoch(year)
-	abs := int64(d * secondsPerDay)
-	abs += absoluteToInternal + internalToUnix
-
-	startSec := int64(tzruleTime(year, startRule, stdOffset))
-	endSec := int64(tzruleTime(year, endRule, dstOffset))
-	dstIsDST, stdIsDST := true, false
-	// Note: this is a flipping of "DST" and "STD" while retaining the labels
-	// This happens in southern hemispheres. The labelling here thus is a little
-	// inconsistent with the goal.
-	if endSec < startSec {
-		startSec, endSec = endSec, startSec
-		stdName, dstName = dstName, stdName
-		stdOffset, dstOffset = dstOffset, stdOffset
-		stdIsDST, dstIsDST = dstIsDST, stdIsDST
+	// Zoneinfo version 3 supports zones with permanent DST.
+	// Check the length of DST in a leap year to detect this case.
+	// Example string: STD0DST0,J1/0,J365/24
+	if rules[0].kind != ruleMonthWeekDay && rules[1].kind != ruleMonthWeekDay {
+		startSec := tzruleTime(4, rules[0], midYearZone.offset)
+		endSec := tzruleTime(4, rules[1], newYearZone.offset)
+		if endSec-startSec >= 366*secondsPerDay {
+			return nil, midYearZone, zone{}, true
+		}
 	}
+	return
 
-	// The start and end values that we return are accurate
-	// close to a daylight savings transition, but are otherwise
-	// just the start and end of the year. That suffices for
-	// the only caller that cares, which is Date.
-	if ysec < startSec {
-		return stdName, stdOffset, abs, startSec + abs, stdIsDST, true
-	} else if ysec >= endSec {
-		return stdName, stdOffset, endSec + abs, abs + 365*secondsPerDay, stdIsDST, true
-	} else {
-		return dstName, dstOffset, startSec + abs, endSec + abs, dstIsDST, true
-	}
 }
 
 // tzsetName returns the timezone name at the start of the tzset string s,
@@ -467,7 +444,8 @@ type rule struct {
 	day  int
 	week int
 	mon  int
-	time int // transition time
+	time int   // transition time
+	zone *zone // transition target
 }
 
 // tzsetRule parses a rule from a tzset string.
@@ -556,6 +534,56 @@ func tzsetNum(s string, min, max int) (num int, rest string, ok bool) {
 		return 0, "", false
 	}
 	return num, "", true
+}
+
+// If rules are present, tzrule returns the zone that applies at sec
+// and the time span when the zone is in effect.
+// Otherwise it returns nil and the time span from lastTxSec to omega.
+func tzrule(rule []rule, lastTxSec, sec int64) (z *zone, start, end int64) {
+	if len(rule) != 2 {
+		return nil, lastTxSec, omega
+	}
+
+	year, _, _, _ := absDate(uint64(sec+unixToInternal+internalToAbsolute), false)
+
+	// Compute start of year in seconds since Unix epoch.
+	d := daysSinceEpoch(year)
+	abs := int64(d * secondsPerDay)
+	abs += absoluteToInternal + internalToUnix
+
+	midYearZone, newYearZone := rule[0].zone, rule[1].zone
+	startSec := int64(tzruleTime(year, rule[0], newYearZone.offset)) + abs
+	endSec := int64(tzruleTime(year, rule[1], midYearZone.offset)) + abs
+
+	// Now newYearZone is STD and midYearZone is DST.
+	// Flip if DST spans the new year transition.
+	// This happens in southern hemisphere and in Europe/Dublin.
+	if endSec < startSec {
+		startSec, endSec = endSec, startSec
+		midYearZone, newYearZone = newYearZone, midYearZone
+	}
+
+	// The start and end values that we return are accurate
+	// close to a daylight savings transition, but are otherwise
+	// just the start and end of the year. That suffices for
+	// the only caller that cares, which is Date.
+	if sec < startSec {
+		z, start, end = newYearZone, abs, startSec
+	} else if sec < endSec {
+		z, start, end = midYearZone, startSec, endSec
+	} else {
+		z, start, end = newYearZone, endSec, abs+365*secondsPerDay
+		if isLeap(year) {
+			end += secondsPerDay
+		}
+	}
+
+	// Ensure that start is not before the last known transition.
+	// end is guaranteed to be after.
+	if start < lastTxSec {
+		start = lastTxSec
+	}
+	return
 }
 
 // tzruleTime takes a year, a rule, and a timezone offset,

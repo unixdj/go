@@ -313,8 +313,14 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 		tx = append(tx, zoneTrans{when: alpha, index: 0})
 	}
 
+	rule, newYearZone, midYearZone, _ := tzset(extend)
+	if len(rule) == 2 {
+		rule[1].zone = findOrAddZone(&zones, newYearZone)
+		rule[0].zone = findOrAddZone(&zones, midYearZone)
+	}
+
 	// Committed to succeed.
-	l := &Location{zone: zones, tx: tx, name: name, extend: extend}
+	l := &Location{zone: zones, tx: tx, name: name, rule: rule}
 
 	// Fill in the cache with information about right now,
 	// since that will be the most common lookup.
@@ -326,23 +332,10 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 			l.cacheZone = &l.zone[tx[i].index]
 			if i+1 < len(tx) {
 				l.cacheEnd = tx[i+1].when
-			} else if l.extend != "" {
+			} else if l.rule != nil {
 				// If we're at the end of the known zone transitions,
-				// try the extend string.
-				if name, offset, estart, eend, isDST, ok := tzset(l.extend, l.cacheStart, sec); ok {
-					l.cacheStart = estart
-					l.cacheEnd = eend
-					// Find the zone that is returned by tzset to avoid allocation if possible.
-					if zoneIdx := findZone(l.zone, name, offset, isDST); zoneIdx != -1 {
-						l.cacheZone = &l.zone[zoneIdx]
-					} else {
-						l.cacheZone = &zone{
-							name:   name,
-							offset: offset,
-							isDST:  isDST,
-						}
-					}
-				}
+				// try the transition rules.
+				l.cacheZone, l.cacheStart, l.cacheEnd = tzrule(l.rule, l.cacheStart, sec)
 			}
 			break
 		}
@@ -351,13 +344,14 @@ func LoadLocationFromTZData(name string, data []byte) (*Location, error) {
 	return l, nil
 }
 
-func findZone(zones []zone, name string, offset int, isDST bool) int {
-	for i, z := range zones {
-		if z.name == name && z.offset == offset && z.isDST == isDST {
-			return i
+func findOrAddZone(zones *[]zone, zone zone) *zone {
+	for i, z := range *zones {
+		if z == zone {
+			return &(*zones)[i]
 		}
 	}
-	return -1
+	*zones = append(*zones, zone)
+	return &(*zones)[len(*zones)-1]
 }
 
 // loadTzinfoFromDirOrZip returns the contents of the file with the given name
