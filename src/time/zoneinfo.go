@@ -329,18 +329,56 @@ func tzset(s string) (rules []rule, newYearZone, midYearZone zone, ok bool) {
 		return nil, zone{}, zone{}, false
 	}
 
+	// Convert time to UTC.
+	rules[0].time -= newYearZone.offset
+	rules[1].time -= midYearZone.offset
+
 	// Zoneinfo version 3 supports zones with permanent DST.
 	// Check the length of DST in a leap year to detect this case.
 	// Example string: STD0DST0,J1/0,J365/24
-	if rules[0].kind != ruleMonthWeekDay && rules[1].kind != ruleMonthWeekDay {
-		startSec := tzruleTime(4, rules[0], midYearZone.offset)
-		endSec := tzruleTime(4, rules[1], newYearZone.offset)
+	if rules[0].dow < 0 && rules[1].dow < 0 {
+		startSec := tzruleTime(0, rules[0], true)
+		endSec := tzruleTime(0, rules[1], true)
 		if endSec-startSec >= 366*secondsPerDay {
 			return nil, midYearZone, zone{}, true
 		}
 	}
-	return
 
+	rules[0].normalize()
+	rules[1].normalize()
+
+	// Reorder rules and zones in order they occur in a year.
+	if rules[0].day > rules[1].day {
+		rules[0], rules[1] = rules[1], rules[0]
+		newYearZone, midYearZone = midYearZone, newYearZone
+	}
+	return
+}
+
+// normalize changes r to the functionally equivalent canonical form
+// so that its time is within [0, secondsPerDay)
+// and its day is non-negative and, if possible, below 365.
+//
+// The normalized rule may result in transitions after the end of the year if:
+//   - it is a day-of-year rule (addLeapDay = false) whose day,
+//     after being adjusted according to its time, is >= 365;
+//   - it is a month-week-day rule whose adjusted day is 26 to 31 December.
+func (r *rule) normalize() {
+	if uint(r.time) >= secondsPerDay {
+		var d int
+		d, r.time = norm(0, r.time, secondsPerDay)
+		r.day += d
+		if r.dow >= 0 {
+			_, r.dow = norm(0, r.dow+d, 7)
+		}
+		if !r.addLeapDay && r.day < 0 {
+			r.day += 365
+			r.addLeapDay = true
+		} else if r.addLeapDay && r.day >= 365 {
+			r.day -= 365
+			r.addLeapDay = false
+		}
+	}
 }
 
 // tzsetName returns the timezone name at the start of the tzset string s,
@@ -427,23 +465,13 @@ func tzsetOffset(s string, maxHour int) (offset int, rest string, ok bool) {
 	return off, s, true
 }
 
-// ruleKind is the kinds of rules that can be seen in a tzset string.
-type ruleKind int
-
-const (
-	ruleJulian ruleKind = iota
-	ruleDOY
-	ruleMonthWeekDay
-)
-
 // rule is a rule read from a tzset string.
 type rule struct {
-	kind ruleKind
-	day  int
-	week int
-	mon  int
-	time int   // transition time
-	zone *zone // transition target
+	day        int   // day of year of transition, zero-origin
+	dow        int   // day of week (0=Sunday) or -1 for any
+	addLeapDay bool  // add a day in leap years?
+	time       int   // time of day of transition in UTC
+	zone       *zone // transition target
 }
 
 // tzsetRule parses a rule from a tzset string.
@@ -460,8 +488,11 @@ func tzsetRule(s string) (rule, string, bool) {
 		if !ok {
 			return rule{}, "", false
 		}
-		r.kind = ruleJulian
+		jday--
+		addLeapDay := jday >= 31+28
 		r.day = jday
+		r.dow = -1
+		r.addLeapDay = addLeapDay
 	} else if s[0] == 'M' {
 		var mon int
 		mon, s, ok = tzsetNum(s[1:], 1, 12)
@@ -474,23 +505,29 @@ func tzsetRule(s string) (rule, string, bool) {
 		if !ok || len(s) == 0 || s[0] != '.' {
 			return rule{}, "", false
 		}
-		var day int
-		day, s, ok = tzsetNum(s[1:], 0, 6)
+		var dow int
+		dow, s, ok = tzsetNum(s[1:], 0, 6)
 		if !ok {
 			return rule{}, "", false
 		}
-		r.kind = ruleMonthWeekDay
+		// Convert to 0-based weeks, treating week 5 as week -1
+		// of the next month.
+		week--
+		mon += week >> 2        // 1 <= mon <= 13
+		week = week&3 - week>>2 // -1 <= week <= 3
+		day := int(daysBefore[mon-1]) + week*7
+		addLeapDay := mon > 2
 		r.day = day
-		r.week = week
-		r.mon = mon
+		r.dow = dow
+		r.addLeapDay = addLeapDay
 	} else {
 		var day int
 		day, s, ok = tzsetNum(s, 0, 365)
 		if !ok {
 			return rule{}, "", false
 		}
-		r.kind = ruleDOY
 		r.day = day
+		r.dow = -1
 	}
 
 	if len(s) == 0 || s[0] != '/' {
@@ -544,38 +581,48 @@ func tzrule(rule []rule, lastTxSec, sec int64) (z *zone, start, end int64) {
 		return nil, lastTxSec, omega
 	}
 
-	year, _, _, _ := absDate(uint64(sec+unixToInternal+internalToAbsolute), false)
+	year, _, _, yday := absDate(uint64(sec+unixToInternal+internalToAbsolute), false)
 
-	// Compute start of year in seconds since Unix epoch.
+	// Compute start of year in days since absolute epoch.
 	d := daysSinceEpoch(year)
-	abs := int64(d * secondsPerDay)
-	abs += absoluteToInternal + internalToUnix
+	leap := isLeap(year)
 
-	midYearZone, newYearZone := rule[0].zone, rule[1].zone
-	startSec := int64(tzruleTime(year, rule[0], newYearZone.offset)) + abs
-	endSec := int64(tzruleTime(year, rule[1], midYearZone.offset)) + abs
-
-	// Now newYearZone is STD and midYearZone is DST.
-	// Flip if DST spans the new year transition.
-	// This happens in southern hemisphere and in Europe/Dublin.
-	if endSec < startSec {
-		startSec, endSec = endSec, startSec
-		midYearZone, newYearZone = newYearZone, midYearZone
+	// If sec is guaranteed to be before the second transition in the
+	// year, calculate the time of the first transition, otherwise of
+	// the second.
+	halfYear := year << 1
+	if yday >= rule[1].day {
+		halfYear++
 	}
-
-	// The start and end values that we return are accurate
-	// close to a daylight savings transition, but are otherwise
-	// just the start and end of the year. That suffices for
-	// the only caller that cares, which is Date.
-	if sec < startSec {
-		z, start, end = newYearZone, abs, startSec
-	} else if sec < endSec {
-		z, start, end = midYearZone, startSec, endSec
-	} else {
-		z, start, end = newYearZone, endSec, abs+365*secondsPerDay
-		if isLeap(year) {
-			end += secondsPerDay
+	start = tzruleTime(d, rule[halfYear&1], leap)
+	// Calculate previous or next transition.
+	if sec < start {
+		// This loop will run twice if last year's
+		// second transition occurs in this year after sec.
+		for sec < start {
+			end = start
+			if halfYear--; halfYear&1 != 0 {
+				leap = !leap && isLeap(halfYear>>1)
+				if leap {
+					d -= 366
+				} else {
+					d -= 365
+				}
+			}
+			start = tzruleTime(d, rule[halfYear&1], leap)
 		}
+		z = rule[halfYear&1].zone
+	} else {
+		z = rule[halfYear&1].zone
+		if halfYear++; halfYear&1 == 0 {
+			if leap {
+				d += 366
+			} else {
+				d += 365
+			}
+			leap = !leap && isLeap(halfYear>>1)
+		}
+		end = tzruleTime(d, rule[halfYear&1], leap)
 	}
 
 	// Ensure that start is not before the last known transition.
@@ -586,52 +633,24 @@ func tzrule(rule []rule, lastTxSec, sec int64) (z *zone, start, end int64) {
 	return
 }
 
-// tzruleTime takes a year, a rule, and a timezone offset,
-// and returns the number of seconds since the start of the year
-// that the rule takes effect.
-func tzruleTime(year int, r rule, off int) int {
-	var s int
-	switch r.kind {
-	case ruleJulian:
-		s = (r.day - 1) * secondsPerDay
-		if isLeap(year) && r.day >= 60 {
-			s += secondsPerDay
-		}
-	case ruleDOY:
-		s = r.day * secondsPerDay
-	case ruleMonthWeekDay:
-		// Zeller's Congruence.
-		m1 := (r.mon+9)%12 + 1
-		yy0 := year
-		if r.mon <= 2 {
-			yy0--
-		}
-		yy1 := yy0 / 100
-		yy2 := yy0 % 100
-		dow := ((26*m1-2)/10 + 1 + yy2 + yy2/4 + yy1/4 - 2*yy1) % 7
-		if dow < 0 {
-			dow += 7
-		}
-		// Now dow is the day-of-week of the first day of r.mon.
-		// Get the day-of-month of the first "dow" day.
-		d := r.day - dow
-		if d < 0 {
-			d += 7
-		}
-		for i := 1; i < r.week; i++ {
-			if d+7 >= daysIn(Month(r.mon), year) {
-				break
-			}
-			d += 7
-		}
-		d += int(daysBefore[r.mon-1])
-		if isLeap(year) && r.mon > 2 {
-			d++
-		}
-		s = d * secondsPerDay
+// tzruleTime takes the start of a year in days since absolute epoch,
+// a rule, and a leap year flag, and returns the Unix time
+// when the rule takes effect.
+func tzruleTime(yearDay uint64, r rule, leapYear bool) int64 {
+	d := int(yearDay) + r.day
+	if leapYear && r.addLeapDay {
+		d++
 	}
-
-	return s + r.time - off
+	if r.dow >= 0 {
+		// Find the day of week r.dow in the week starting on day d.
+		// Day 0 is Monday, therefore d%7 is the day of week of
+		// d-1 or d+6.  To speed up the calculation, subtract the
+		// reverse difference from d+6.  NOTE(vadik): correctness
+		// guaranteed only from 7 January absoluteZeroYear.
+		delta := (d - r.dow) % 7
+		d += 6 - delta
+	}
+	return int64(d*secondsPerDay+r.time) + (absoluteToInternal + internalToUnix)
 }
 
 // lookupName returns information about the time zone with

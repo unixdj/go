@@ -265,12 +265,12 @@ func TestTzset(t *testing.T) {
 	}{
 		{"", 0, 0, "", 0, 0, 0, false, false},
 		{"PST8PDT,M3.2.0,M11.1.0", 0, 2159200800, "PDT", -7 * 60 * 60, 2152173600, 2172733200, true, true},
-		{"PST8PDT,M3.2.0,M11.1.0", 0, 2152173599, "PST", -8 * 60 * 60, 2145916800, 2152173600, false, true},
+		{"PST8PDT,M3.2.0,M11.1.0", 0, 2152173599, "PST", -8 * 60 * 60, 2140678800, 2152173600, false, true},
 		{"PST8PDT,M3.2.0,M11.1.0", 0, 2152173600, "PDT", -7 * 60 * 60, 2152173600, 2172733200, true, true},
 		{"PST8PDT,M3.2.0,M11.1.0", 0, 2152173601, "PDT", -7 * 60 * 60, 2152173600, 2172733200, true, true},
 		{"PST8PDT,M3.2.0,M11.1.0", 0, 2172733199, "PDT", -7 * 60 * 60, 2152173600, 2172733200, true, true},
-		{"PST8PDT,M3.2.0,M11.1.0", 0, 2172733200, "PST", -8 * 60 * 60, 2172733200, 2177452800, false, true},
-		{"PST8PDT,M3.2.0,M11.1.0", 0, 2172733201, "PST", -8 * 60 * 60, 2172733200, 2177452800, false, true},
+		{"PST8PDT,M3.2.0,M11.1.0", 0, 2172733200, "PST", -8 * 60 * 60, 2172733200, 2183623200, false, true},
+		{"PST8PDT,M3.2.0,M11.1.0", 0, 2172733201, "PST", -8 * 60 * 60, 2172733200, 2183623200, false, true},
 		{"KST-9", 592333200, 1677246697, "KST", 9 * 60 * 60, 592333200, 1<<63 - 1, false, true},
 	} {
 		name, off, start, end, isDST, ok := time.TzsetTzrule(test.inStr, test.inEnd, test.inSec)
@@ -334,13 +334,13 @@ func TestTzsetRule(t *testing.T) {
 	}{
 		{"", time.Rule{}, "", false},
 		{"X", time.Rule{}, "", false},
-		{"J10", time.Rule{Kind: time.RuleJulian, Day: 10, Time: 2 * 60 * 60}, "", true},
-		{"20", time.Rule{Kind: time.RuleDOY, Day: 20, Time: 2 * 60 * 60}, "", true},
-		{"M1.2.3", time.Rule{Kind: time.RuleMonthWeekDay, Mon: 1, Week: 2, Day: 3, Time: 2 * 60 * 60}, "", true},
-		{"30/03:00:00", time.Rule{Kind: time.RuleDOY, Day: 30, Time: 3 * 60 * 60}, "", true},
-		{"M4.5.6/03:00:00", time.Rule{Kind: time.RuleMonthWeekDay, Mon: 4, Week: 5, Day: 6, Time: 3 * 60 * 60}, "", true},
+		{"J10", time.Rule{Day: 9, DOW: -1, Time: 2 * 60 * 60}, "", true},
+		{"20", time.Rule{Day: 20, DOW: -1, Time: 2 * 60 * 60}, "", true},
+		{"M1.2.3", time.Rule{Day: 7, DOW: 3, Time: 2 * 60 * 60}, "", true},
+		{"30/03:00:00", time.Rule{Day: 30, DOW: -1, Time: 3 * 60 * 60}, "", true},
+		{"M4.5.6/03:00:00", time.Rule{Day: 113, DOW: 6, AddLeapDay: true, Time: 3 * 60 * 60}, "", true},
 		{"M4.5.7/03:00:00", time.Rule{}, "", false},
-		{"M4.5.6/-04", time.Rule{Kind: time.RuleMonthWeekDay, Mon: 4, Week: 5, Day: 6, Time: -4 * 60 * 60}, "", true},
+		{"M4.5.6/-04", time.Rule{Day: 113, DOW: 6, AddLeapDay: true, Time: -4 * 60 * 60}, "", true},
 	} {
 		r, out, ok := time.TzsetRule(test.in)
 		if r != test.r || out != test.out || ok != test.ok {

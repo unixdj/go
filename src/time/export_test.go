@@ -45,31 +45,24 @@ func LoadFromEmbeddedTZData(zone string) (string, error) {
 	return loadFromEmbeddedTZData(zone)
 }
 
-type RuleKind int
-
 const (
-	RuleJulian       = RuleKind(ruleJulian)
-	RuleDOY          = RuleKind(ruleDOY)
-	RuleMonthWeekDay = RuleKind(ruleMonthWeekDay)
-	UnixToInternal   = unixToInternal
+	UnixToInternal = unixToInternal
 )
 
 type Rule struct {
-	Kind RuleKind
-	Day  int
-	Week int
-	Mon  int
-	Time int
+	Day        int
+	DOW        int
+	AddLeapDay bool
+	Time       int
 }
 
 func TzsetRule(s string) (Rule, string, bool) {
 	r, rs, ok := tzsetRule(s)
 	rr := Rule{
-		Kind: RuleKind(r.kind),
-		Day:  r.day,
-		Week: r.week,
-		Mon:  r.mon,
-		Time: r.time,
+		Day:        r.day,
+		DOW:        r.dow,
+		AddLeapDay: r.addLeapDay,
+		Time:       r.time,
 	}
 	return rr, rs, ok
 }
