@@ -167,37 +167,43 @@ func (l *Location) lookup(sec int64) (name string, offset int, start, end int64,
 		return
 	}
 
-	// Binary search for entry with largest time <= sec.
-	// Not using sort.Search to avoid dependencies.
+	var zone *zone
 	tx := l.tx
-	end = omega
+
+	// For most locations, the last static transition is in the past.
+	// Optimise by checking it first.
 	lo := 0
-	hi := len(tx)
-	for hi-lo > 1 {
-		m := int(uint(lo+hi) >> 1)
-		lim := tx[m].when
-		if sec < lim {
-			end = lim
-			hi = m
-		} else {
-			lo = m
+	hi := len(tx) - 1
+	end = tx[hi].when
+	if sec < end {
+		// Binary search for entry with largest time <= sec.
+		// Not using sort.Search to avoid dependencies.
+		for hi-lo > 1 {
+			m := int(uint(lo+hi) >> 1)
+			lim := tx[m].when
+			if sec < lim {
+				hi = m
+			} else {
+				lo = m
+			}
+		}
+		zone = &l.zone[tx[lo].index]
+		start = tx[lo].when
+		end = tx[hi].when
+	} else {
+		// If we're at the end of the known zone transitions, try
+		// the transition rules.  tzrules returns the time span when
+		// the zone is in effect.  If rules are present, it returns
+		// the zone.  Otherwise use the last transition target.
+		zone, start, end = tzrule(l.rule, end, sec)
+		if zone == nil {
+			zone = &l.zone[tx[hi].index]
 		}
 	}
-	zone := &l.zone[tx[lo].index]
+
 	name = zone.name
 	offset = zone.offset
-	start = tx[lo].when
-	// end = maintained during the search
 	isDST = zone.isDST
-
-	// If we're at the end of the known zone transitions,
-	// try the extend string.
-	if lo == len(tx)-1 {
-		if ezone, estart, eend := tzrule(l.rule, start, sec); ezone != nil {
-			return ezone.name, ezone.offset, estart, eend, ezone.isDST
-		}
-	}
-
 	return
 }
 
